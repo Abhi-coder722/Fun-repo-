@@ -1,0 +1,11 @@
+{
+  "name": "operation-amelie",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A little love story made by Abhi for Amelie.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": { "node": ">=20" }
+}
