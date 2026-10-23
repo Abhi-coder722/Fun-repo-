@@ -45,15 +45,10 @@ The server can also commit the bookings JSON file to GitHub after every saved su
 Set these environment variables on Render:
 
 ```text
-GITHUB_BOOKINGS_BACKUP=true
 GITHUB_TOKEN=github_pat_...
-GITHUB_OWNER=your-github-username
-GITHUB_REPO=your-repo-name
-GITHUB_BRANCH=bookings-backup
-GITHUB_BOOKINGS_PATH=data/bookings.json
 ```
 
-Create a fine-grained GitHub token with **Contents: Read and write** access for this repository only. Create the `bookings-backup` branch in GitHub before enabling this. A backup-only branch is recommended so every submitted answer does not trigger a new Render deploy. Keep `GITHUB_TOKEN` private in Render environment variables. If the repository is public, the backed-up booking JSON will be public too.
+Create a fine-grained GitHub token with **Contents: Read and write** access for this repository only. Keep `GITHUB_TOKEN` private in Render environment variables. The app defaults to backing up `data/bookings.json` to the already-created `bookings-backup` branch on `Abhi-coder722/Fun-repo-`, so every submitted answer does not trigger a new Render deploy. If the repository is public, the backed-up booking JSON will be public too.
 
 ## Personalize it
 

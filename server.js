@@ -12,7 +12,8 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 const BOOKING_FILE = path.join(DATA_DIR, 'bookings.json');
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-const GITHUB_BOOKINGS_BACKUP = process.env.GITHUB_BOOKINGS_BACKUP === 'true';
+const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '');
+const GITHUB_BOOKINGS_BACKUP = process.env.GITHUB_BOOKINGS_BACKUP === 'true' || !!GITHUB_TOKEN;
 const SESSION_SECRET = crypto.randomBytes(32);
 const HOUR = 3600000;
 const SESSION_MS = 12 * HOUR;
@@ -79,10 +80,10 @@ function githubConfig() {
   const slug=String(process.env.GITHUB_REPOSITORY || '');
   const [slugOwner, slugRepo] = slug.split('/');
   const config = {
-    token: String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ''),
-    owner: String(process.env.GITHUB_OWNER || slugOwner || ''),
-    repo: String(process.env.GITHUB_REPO || slugRepo || ''),
-    branch: String(process.env.GITHUB_BRANCH || 'main'),
+    token: GITHUB_TOKEN,
+    owner: String(process.env.GITHUB_OWNER || slugOwner || 'Abhi-coder722'),
+    repo: String(process.env.GITHUB_REPO || slugRepo || 'Fun-repo-'),
+    branch: String(process.env.GITHUB_BRANCH || 'bookings-backup'),
     filePath: String(process.env.GITHUB_BOOKINGS_PATH || 'data/bookings.json').replace(/^\/+/, ''),
     committerName: String(process.env.GITHUB_COMMITTER_NAME || 'Operation Amelie'),
     committerEmail: String(process.env.GITHUB_COMMITTER_EMAIL || 'operation-amelie@users.noreply.github.com')
