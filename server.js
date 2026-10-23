@@ -52,11 +52,22 @@ async function bodyJSON(req) {
 function parseBookings(content) { const parsed = JSON.parse(content); return Array.isArray(parsed) ? parsed : []; }
 async function readLocalBookings() { try { return parseBookings(await fs.readFile(BOOKING_FILE,'utf8')); } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
 async function readBookings() { return readLocalBookings(); }
+function storageError(err) {
+  const e = new Error(`Booking storage is not writable at ${BOOKING_FILE}. On Render, add a persistent Disk mounted at ${DATA_DIR}, then redeploy.`);
+  e.status = 503;
+  e.cause = err;
+  console.error('Booking storage write failed:', err.code || err.name, err.message);
+  return e;
+}
 async function writeLocalBookings(bookings) {
-  await fs.mkdir(DATA_DIR, {recursive:true});
-  const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp';
-  await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600});
-  await fs.rename(temp, BOOKING_FILE);
+  try {
+    await fs.mkdir(DATA_DIR, {recursive:true});
+    const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp';
+    await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600});
+    await fs.rename(temp, BOOKING_FILE);
+  } catch(e) {
+    throw storageError(e);
+  }
 }
 async function persistBookings(bookings) {
   await writeLocalBookings(bookings);
