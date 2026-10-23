@@ -151,7 +151,15 @@ async function writeLocalBookings(bookings) {
 }
 async function persistBookings(bookings, reason='update') {
   await writeLocalBookings(bookings);
-  if(githubConfig()) await pushBookingsToGitHub(JSON.stringify(bookings,null,2) + '\n', reason);
+  if(githubConfig()) {
+    try { await pushBookingsToGitHub(JSON.stringify(bookings,null,2) + '\n', reason); }
+    catch(e) {
+      console.error('GitHub bookings backup failed:', e.message);
+      const err = new Error('Could not save the date safely. Please try again in a minute.');
+      err.status = 503;
+      throw err;
+    }
+  }
 }
 async function api(req,res,url) {
   if(req.method === 'POST' && url.pathname === '/api/bookings') {
@@ -211,7 +219,7 @@ async function serve(req,res,url) {
 }
 async function handler(req,res) {
   try { const url=new URL(req.url,'http://localhost'); if(url.pathname.startsWith('/api/')) return await api(req,res,url); await serve(req,res,url); }
-  catch(e) { console.error(e); if(!res.headersSent) error(res,e.message==='Request too large.'?413:400, e.message==='Request too large.'?'Request too large.':'Something went wrong.'); else res.end(); }
+  catch(e) { console.error(e); if(!res.headersSent) error(res,e.status || (e.message==='Request too large.'?413:400), e.status ? e.message : e.message==='Request too large.'?'Request too large.':'Something went wrong.'); else res.end(); }
 }
 if(require.main===module) {
   if(!ADMIN_PASSWORD) console.warn('Admin dashboard login is DISABLED until ADMIN_PASSWORD is set. See README.md');
