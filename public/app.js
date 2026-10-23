@@ -156,7 +156,9 @@
     $('#dateInput').max=new Date(Date.now()+365*86400000).toISOString().slice(0,10);
   }
   function checkPreviouslyBooked(){
-    try {const raw=localStorage.getItem('amelie_booking');if(!raw)return;const b=JSON.parse(raw);if(b&&b.date&&b.time){$('#bookingForm').classList.add('hidden');$('#bookingSuccess').classList.remove('hidden');showBookingSummary(b);}}catch{}
+    try {localStorage.removeItem('amelie_booking');}catch{}
+    $('#bookingForm').classList.remove('hidden');
+    $('#bookingSuccess').classList.add('hidden');
   }
   function showBookingSummary(b){
     const parsed=new Date(b.date+'T12:00:00');
@@ -177,7 +179,6 @@
       const json=await response.json();
       if(!response.ok)throw Error(json.error||'Could not save the date.');
       const booking={date:json.date,time:json.time,id:json.id};
-      try{localStorage.setItem('amelie_booking',JSON.stringify(booking));}catch{}
       $('#bookingForm').classList.add('hidden');$('#bookingSuccess').classList.remove('hidden');showBookingSummary(booking);
       say('IT IS BOOKED! Daddy Abhi can see the date. Now please give me a tiny party hat!');
       burst(90);chirp([520,660,800,1050]);
