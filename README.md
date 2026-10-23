@@ -38,6 +38,23 @@ This project deliberately does **not** send emails by default. The date is visib
 
 For a public deployment, use HTTPS and set `COOKIE_SECURE=true`. Keep `ADMIN_PASSWORD` in the host's environment variables. Do not put it in frontend JavaScript or a public Git repository. Consider access limits/CAPTCHA if you share the link widely; the date endpoint is intentionally public so Amelie can submit it.
 
+### Optional GitHub backup
+
+The server can also commit the bookings JSON file to GitHub after every saved submission or admin status change. It still writes to `data/bookings.json` first, then runs the GitHub backup in the background so Amelie does not see an error if GitHub is temporarily unavailable. When backup is enabled, the admin dashboard also reads the GitHub copy and merges it with the local JSON file, so Render can recover bookings after a restart or redeploy.
+
+Set these environment variables on Render:
+
+```text
+GITHUB_BOOKINGS_BACKUP=true
+GITHUB_TOKEN=github_pat_...
+GITHUB_OWNER=your-github-username
+GITHUB_REPO=your-repo-name
+GITHUB_BRANCH=bookings-backup
+GITHUB_BOOKINGS_PATH=data/bookings.json
+```
+
+Create a fine-grained GitHub token with **Contents: Read and write** access for this repository only. Create the `bookings-backup` branch in GitHub before enabling this. A backup-only branch is recommended so every submitted answer does not trigger a new Render deploy. Keep `GITHUB_TOKEN` private in Render environment variables. If the repository is public, the backed-up booking JSON will be public too.
+
 ## Personalize it
 
 - **The true story:** The Volksfest chapter specifically says Abhi planned to attend with Amelie's friend, who said she was bringing a girl named Amelie. Find that section in `public/index.html` if you want to add more details.

@@ -12,12 +12,15 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 const BOOKING_FILE = path.join(DATA_DIR, 'bookings.json');
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const GITHUB_BOOKINGS_BACKUP = process.env.GITHUB_BOOKINGS_BACKUP === 'true';
 const SESSION_SECRET = crypto.randomBytes(32);
 const HOUR = 3600000;
 const SESSION_MS = 12 * HOUR;
 const loginAttempts = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' };
 let writeQueue = Promise.resolve();
+let backupQueue = Promise.resolve();
+let backupWarningShown = false;
 
 function send(res, status, data, headers = {}) {
   const isObject = typeof data !== 'string' && !Buffer.isBuffer(data);
@@ -48,8 +51,103 @@ async function bodyJSON(req) {
   for await (const chunk of req) { count+=chunk.length; if(count>10000) throw new Error('Request too large.'); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('Invalid JSON.'); }
 }
-async function readBookings() { try { const content = JSON.parse(await fs.readFile(BOOKING_FILE,'utf8')); return Array.isArray(content) ? content : []; } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
-async function atomicWrite(bookings) { await fs.mkdir(DATA_DIR, {recursive:true}); const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp'; await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600}); await fs.rename(temp, BOOKING_FILE); }
+function parseBookings(content) { const parsed = JSON.parse(content); return Array.isArray(parsed) ? parsed : []; }
+function mergeBookings(local, remote) {
+  const merged = new Map();
+  for(const booking of [...local, ...remote]) {
+    const key = booking && (booking.id || booking.key);
+    if(key) merged.set(key, booking);
+  }
+  return [...merged.values()];
+}
+async function readLocalBookings() { try { return parseBookings(await fs.readFile(BOOKING_FILE,'utf8')); } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
+async function readGitHubBookings() {
+  const config = githubConfig();
+  if(!config) return [];
+  const current = await currentGitHubFile(config);
+  if(!current || !current.content) return [];
+  return parseBookings(Buffer.from(String(current.content).replace(/\n/g,''), 'base64').toString('utf8'));
+}
+async function readBookings() {
+  const local = await readLocalBookings();
+  if(!GITHUB_BOOKINGS_BACKUP) return local;
+  try { return mergeBookings(local, await readGitHubBookings()); }
+  catch(e) { console.error('GitHub bookings restore failed:', e.message); return local; }
+}
+function githubConfig() {
+  if(!GITHUB_BOOKINGS_BACKUP) return null;
+  const slug=String(process.env.GITHUB_REPOSITORY || '');
+  const [slugOwner, slugRepo] = slug.split('/');
+  const config = {
+    token: String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ''),
+    owner: String(process.env.GITHUB_OWNER || slugOwner || ''),
+    repo: String(process.env.GITHUB_REPO || slugRepo || ''),
+    branch: String(process.env.GITHUB_BRANCH || 'main'),
+    filePath: String(process.env.GITHUB_BOOKINGS_PATH || 'data/bookings.json').replace(/^\/+/, ''),
+    committerName: String(process.env.GITHUB_COMMITTER_NAME || 'Operation Amelie'),
+    committerEmail: String(process.env.GITHUB_COMMITTER_EMAIL || 'operation-amelie@users.noreply.github.com')
+  };
+  if(config.token && config.owner && config.repo && config.filePath) return config;
+  if(!backupWarningShown) {
+    backupWarningShown = true;
+    console.warn('GitHub bookings backup is enabled but missing GITHUB_TOKEN and repo settings.');
+  }
+  return null;
+}
+function encodeGitHubPath(filePath) { return filePath.split('/').map(encodeURIComponent).join('/'); }
+async function githubJSON(url, config, options = {}) {
+  const response = await fetch(url, { ...options, headers: { 'Accept':'application/vnd.github+json', 'Authorization':`Bearer ${config.token}`, 'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'operation-amelie', ...(options.headers || {}) } });
+  const text = await response.text();
+  let json = null;
+  if(text) { try { json = JSON.parse(text); } catch { json = { message:text }; } }
+  if(!response.ok) {
+    const err = new Error(json && json.message ? json.message : `GitHub request failed with ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return json;
+}
+async function currentGitHubFile(config) {
+  const pathPart = encodeGitHubPath(config.filePath);
+  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart}?ref=${encodeURIComponent(config.branch)}`;
+  try { return await githubJSON(url, config); }
+  catch(e) { if(e.status === 404) return null; throw e; }
+}
+async function pushBookingsToGitHub(content, reason) {
+  const config = githubConfig();
+  if(!config) return;
+  const pathPart = encodeGitHubPath(config.filePath);
+  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart}`;
+  for(let attempt=1; attempt<=2; attempt++) {
+    const current = await currentGitHubFile(config);
+    if(current && current.content) {
+      const existing = Buffer.from(String(current.content).replace(/\n/g,''), 'base64').toString('utf8');
+      if(existing === content) return;
+    }
+    try {
+      await githubJSON(url, config, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          message: `Save Amelie booking ${reason}`,
+          content: Buffer.from(content, 'utf8').toString('base64'),
+          branch: config.branch,
+          sha: current ? current.sha : undefined,
+          committer: { name: config.committerName, email: config.committerEmail }
+        })
+      });
+      return;
+    } catch(e) {
+      if(e.status === 409 && attempt < 2) continue;
+      throw e;
+    }
+  }
+}
+function enqueueBookingsBackup(bookings, reason) {
+  const snapshot = JSON.stringify(bookings,null,2) + '\n';
+  backupQueue = backupQueue.catch(()=>{}).then(()=>pushBookingsToGitHub(snapshot, reason)).catch(e=>console.error('GitHub bookings backup failed:', e.message));
+}
+async function atomicWrite(bookings, reason='update') { await fs.mkdir(DATA_DIR, {recursive:true}); const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp'; await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600}); await fs.rename(temp, BOOKING_FILE); enqueueBookingsBackup(bookings, reason); }
 async function api(req,res,url) {
   if(req.method === 'POST' && url.pathname === '/api/bookings') {
     const b = await bodyJSON(req);
@@ -63,7 +161,7 @@ async function api(req,res,url) {
       const bookings=await readBookings(); const prior=bookings.find(x=>x.key===key);
       if(prior) return prior;
       const entry={ id: crypto.randomUUID(), key, date, time, note, timezone:'Europe/Berlin', createdAt:new Date().toISOString(), status:'confirmed' };
-      bookings.push(entry); await atomicWrite(bookings); return entry;
+      bookings.push(entry); await atomicWrite(bookings, 'submission'); return entry;
     }));
     return send(res,201,{ok:true,id:result.id,date:result.date,time:result.time});
   }
@@ -84,7 +182,7 @@ async function api(req,res,url) {
       if(!['confirmed','completed','cancelled'].includes(input.status)) return error(res,400,'Invalid status.');
       const found=await (writeQueue=writeQueue.catch(()=>{}).then(async()=>{
         const all=await readBookings(); const entry=all.find(x=>x.id===id);
-        if(entry) { entry.status=input.status; await atomicWrite(all); }
+        if(entry) { entry.status=input.status; await atomicWrite(all, 'status update'); }
         return !!entry;
       }));
       return found?send(res,200,{ok:true}):error(res,404,'Booking not found.');
