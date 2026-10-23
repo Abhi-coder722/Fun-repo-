@@ -8,19 +8,17 @@ const { URL } = require('node:url');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
-const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
+const DEFAULT_DATA_DIR = process.env.RENDER ? '/var/data' : path.join(ROOT, 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : DEFAULT_DATA_DIR;
 const BOOKING_FILE = path.join(DATA_DIR, 'bookings.json');
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
-const GITHUB_BOOKINGS_BACKUP = process.env.GITHUB_BOOKINGS_BACKUP === 'true' || !!GITHUB_TOKEN;
 const SESSION_SECRET = crypto.randomBytes(32);
 const HOUR = 3600000;
 const SESSION_MS = 12 * HOUR;
 const loginAttempts = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' };
 let writeQueue = Promise.resolve();
-let backupWarningShown = false;
 
 function send(res, status, data, headers = {}) {
   const isObject = typeof data !== 'string' && !Buffer.isBuffer(data);
@@ -52,114 +50,16 @@ async function bodyJSON(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('Invalid JSON.'); }
 }
 function parseBookings(content) { const parsed = JSON.parse(content); return Array.isArray(parsed) ? parsed : []; }
-function mergeBookings(local, remote) {
-  const merged = new Map();
-  for(const booking of [...local, ...remote]) {
-    const key = booking && (booking.id || booking.key);
-    if(key) merged.set(key, booking);
-  }
-  return [...merged.values()];
-}
 async function readLocalBookings() { try { return parseBookings(await fs.readFile(BOOKING_FILE,'utf8')); } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
-async function readGitHubBookings() {
-  const config = githubConfig();
-  if(!config) return [];
-  const current = await currentGitHubFile(config);
-  if(!current || !current.content) return [];
-  return parseBookings(Buffer.from(String(current.content).replace(/\n/g,''), 'base64').toString('utf8'));
-}
-async function readBookings() {
-  const local = await readLocalBookings();
-  if(!GITHUB_BOOKINGS_BACKUP) return local;
-  try { return mergeBookings(local, await readGitHubBookings()); }
-  catch(e) { console.error('GitHub bookings restore failed:', e.message); return local; }
-}
-function githubConfig() {
-  if(!GITHUB_BOOKINGS_BACKUP) return null;
-  const slug=String(process.env.GITHUB_REPOSITORY || '');
-  const [slugOwner, slugRepo] = slug.split('/');
-  const config = {
-    token: GITHUB_TOKEN,
-    owner: String(process.env.GITHUB_OWNER || slugOwner || 'Abhi-coder722'),
-    repo: String(process.env.GITHUB_REPO || slugRepo || 'Fun-repo-'),
-    branch: String(process.env.GITHUB_BRANCH || 'bookings-backup'),
-    filePath: String(process.env.GITHUB_BOOKINGS_PATH || 'data/bookings.json').replace(/^\/+/, ''),
-    committerName: String(process.env.GITHUB_COMMITTER_NAME || 'Operation Amelie'),
-    committerEmail: String(process.env.GITHUB_COMMITTER_EMAIL || 'operation-amelie@users.noreply.github.com')
-  };
-  if(config.token && config.owner && config.repo && config.filePath) return config;
-  if(!backupWarningShown) {
-    backupWarningShown = true;
-    console.warn('GitHub bookings backup is enabled but missing GITHUB_TOKEN and repo settings.');
-  }
-  return null;
-}
-function encodeGitHubPath(filePath) { return filePath.split('/').map(encodeURIComponent).join('/'); }
-async function githubJSON(url, config, options = {}) {
-  const response = await fetch(url, { ...options, headers: { 'Accept':'application/vnd.github+json', 'Authorization':`Bearer ${config.token}`, 'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'operation-amelie', ...(options.headers || {}) } });
-  const text = await response.text();
-  let json = null;
-  if(text) { try { json = JSON.parse(text); } catch { json = { message:text }; } }
-  if(!response.ok) {
-    const err = new Error(json && json.message ? json.message : `GitHub request failed with ${response.status}`);
-    err.status = response.status;
-    throw err;
-  }
-  return json;
-}
-async function currentGitHubFile(config) {
-  const pathPart = encodeGitHubPath(config.filePath);
-  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart}?ref=${encodeURIComponent(config.branch)}`;
-  try { return await githubJSON(url, config); }
-  catch(e) { if(e.status === 404) return null; throw e; }
-}
-async function pushBookingsToGitHub(content, reason) {
-  const config = githubConfig();
-  if(!config) return;
-  const pathPart = encodeGitHubPath(config.filePath);
-  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart}`;
-  for(let attempt=1; attempt<=2; attempt++) {
-    const current = await currentGitHubFile(config);
-    if(current && current.content) {
-      const existing = Buffer.from(String(current.content).replace(/\n/g,''), 'base64').toString('utf8');
-      if(existing === content) return;
-    }
-    try {
-      await githubJSON(url, config, {
-        method:'PUT',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          message: `Save Amelie booking ${reason}`,
-          content: Buffer.from(content, 'utf8').toString('base64'),
-          branch: config.branch,
-          sha: current ? current.sha : undefined,
-          committer: { name: config.committerName, email: config.committerEmail }
-        })
-      });
-      return;
-    } catch(e) {
-      if(e.status === 409 && attempt < 2) continue;
-      throw e;
-    }
-  }
-}
+async function readBookings() { return readLocalBookings(); }
 async function writeLocalBookings(bookings) {
   await fs.mkdir(DATA_DIR, {recursive:true});
   const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp';
   await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600});
   await fs.rename(temp, BOOKING_FILE);
 }
-async function persistBookings(bookings, reason='update') {
+async function persistBookings(bookings) {
   await writeLocalBookings(bookings);
-  if(githubConfig()) {
-    try { await pushBookingsToGitHub(JSON.stringify(bookings,null,2) + '\n', reason); }
-    catch(e) {
-      console.error('GitHub bookings backup failed:', e.message);
-      const err = new Error('Could not save the date safely. Please try again in a minute.');
-      err.status = 503;
-      throw err;
-    }
-  }
 }
 async function api(req,res,url) {
   if(req.method === 'POST' && url.pathname === '/api/bookings') {
@@ -172,9 +72,9 @@ async function api(req,res,url) {
     if(date < today || date > new Date(Date.now()+366*86400000).toISOString().slice(0,10)) return error(res,400,'Please choose a date within the next year.');
     const result=await (writeQueue = writeQueue.catch(()=>{}).then(async()=>{
       const bookings=await readBookings(); const prior=bookings.find(x=>x.key===key);
-      if(prior) { await persistBookings(bookings, 'submission retry'); return prior; }
+      if(prior) { await persistBookings(bookings); return prior; }
       const entry={ id: crypto.randomUUID(), key, date, time, note, timezone:'Europe/Berlin', createdAt:new Date().toISOString(), status:'confirmed' };
-      bookings.push(entry); await persistBookings(bookings, 'submission'); return entry;
+      bookings.push(entry); await persistBookings(bookings); return entry;
     }));
     return send(res,201,{ok:true,id:result.id,date:result.date,time:result.time});
   }
@@ -195,7 +95,7 @@ async function api(req,res,url) {
       if(!['confirmed','completed','cancelled'].includes(input.status)) return error(res,400,'Invalid status.');
       const found=await (writeQueue=writeQueue.catch(()=>{}).then(async()=>{
         const all=await readBookings(); const entry=all.find(x=>x.id===id);
-        if(entry) { entry.status=input.status; await persistBookings(all, 'status update'); }
+        if(entry) { entry.status=input.status; await persistBookings(all); }
         return !!entry;
       }));
       return found?send(res,200,{ok:true}):error(res,404,'Booking not found.');
@@ -223,8 +123,7 @@ async function handler(req,res) {
 }
 if(require.main===module) {
   if(!ADMIN_PASSWORD) console.warn('Admin dashboard login is DISABLED until ADMIN_PASSWORD is set. See README.md');
-  const backup = githubConfig();
-  if(backup) console.log(`GitHub bookings backup enabled: ${backup.owner}/${backup.repo} ${backup.branch}:${backup.filePath}`);
+  console.log(`Bookings file: ${BOOKING_FILE}`);
   http.createServer(handler).listen(PORT,()=>console.log(`Operation Amelie running at http://localhost:${PORT}`));
 }
 module.exports={handler};

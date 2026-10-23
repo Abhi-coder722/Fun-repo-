@@ -34,21 +34,9 @@ Bookings are stored persistently in `data/bookings.json` on the **server**, not 
 
 This project deliberately does **not** send emails by default. The date is visible by visiting `/admin`. If you want notifications, add an email provider separately.
 
-**Important for deployment:** Use a hosting provider with *persistent storage* (such as a VPS or persistent disk). Platforms with ephemeral or read-only filesystems can **lose** `data/bookings.json` after restarts/deploys. You can choose another persistent location with `DATA_DIR=/absolute/persistent/path`. Back up this directory. The site needs a running Node process; a simple static Netlify/GitHub Pages deployment will **not** save bookings.
+**Important for deployment:** Use a hosting provider with *persistent storage* (such as a VPS or persistent disk). On Render, add a Disk mounted at `/var/data`; the app automatically saves bookings to `/var/data/bookings.json` there. Platforms with ephemeral or read-only filesystems can **lose** bookings after restarts/deploys if no persistent disk is attached. You can choose another persistent location with `DATA_DIR=/absolute/persistent/path`. Back up this directory. The site needs a running Node process; a simple static Netlify/GitHub Pages deployment will **not** save bookings.
 
 For a public deployment, use HTTPS and set `COOKIE_SECURE=true`. Keep `ADMIN_PASSWORD` in the host's environment variables. Do not put it in frontend JavaScript or a public Git repository. Consider access limits/CAPTCHA if you share the link widely; the date endpoint is intentionally public so Amelie can submit it.
-
-### Optional GitHub backup
-
-The server can also commit the bookings JSON file to GitHub after every saved submission or admin status change. It still writes to `data/bookings.json` first, then waits for GitHub to accept the backup before returning success. When backup is enabled, the admin dashboard also reads the GitHub copy and merges it with the local JSON file, so Render can recover bookings after a restart or redeploy.
-
-Set these environment variables on Render:
-
-```text
-GITHUB_TOKEN=github_pat_...
-```
-
-Create a fine-grained GitHub token with **Contents: Read and write** access for this repository only. Keep `GITHUB_TOKEN` private in Render environment variables. The app defaults to backing up `data/bookings.json` to the already-created `bookings-backup` branch on `Abhi-coder722/Fun-repo-`, so every submitted answer does not trigger a new Render deploy. If the repository is public, the backed-up booking JSON will be public too.
 
 ## Personalize it
 
