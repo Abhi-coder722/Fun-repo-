@@ -1,7 +1,7 @@
 'use strict';
 const {test,before,after}=require('node:test');const assert=require('node:assert/strict');const http=require('node:http');const fs=require('node:fs/promises');const os=require('node:os');const path=require('node:path');
 let origin,server,temp;
-before(async()=>{temp=await fs.mkdtemp(path.join(os.tmpdir(),'amelie-test-'));process.env.DATA_DIR=temp;process.env.ADMIN_PASSWORD='a-test-secret';delete require.cache[require.resolve('../server')];const {handler}=require('../server');server=http.createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));origin=`http://127.0.0.1:${server.address().port}`;});
+before(async()=>{temp=await fs.mkdtemp(path.join(os.tmpdir(),'amelie-test-'));process.env.DATA_DIR=temp;process.env.ADMIN_PASSWORD='a-test-secret';delete process.env.GITHUB_TOKEN;delete process.env.GH_TOKEN;delete require.cache[require.resolve('../server')];const {handler}=require('../server');server=http.createServer(handler);await new Promise(r=>server.listen(0,'127.0.0.1',r));origin=`http://127.0.0.1:${server.address().port}`;});
 after(async()=>{await new Promise(r=>server.close(r));await fs.rm(temp,{recursive:true,force:true});});
 test('serves the adventure and cat assets',async()=>{for(const p of ['/','/cat.svg','/app.js','/admin']){const r=await fetch(origin+p);assert.equal(r.status,200,p);}});
 test('cannot see bookings without admin login',async()=>{const r=await fetch(origin+'/api/admin/bookings');assert.equal(r.status,401);});

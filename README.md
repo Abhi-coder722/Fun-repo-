@@ -34,9 +34,17 @@ Bookings are stored persistently in `data/bookings.json` on the **server**, not 
 
 This project deliberately does **not** send emails by default. The date is visible by visiting `/admin`. If you want notifications, add an email provider separately.
 
-**Important for deployment:** Use a hosting provider with *persistent storage* (such as a VPS or persistent disk). On Render, add a Disk mounted at `/var/data`; the app automatically saves bookings to `/var/data/bookings.json` there. Platforms with ephemeral or read-only filesystems can **lose** bookings after restarts/deploys if no persistent disk is attached. You can choose another persistent location with `DATA_DIR=/absolute/persistent/path`. Back up this directory. The site needs a running Node process; a simple static Netlify/GitHub Pages deployment will **not** save bookings.
+**Important for deployment:** On free Render, bookings are saved permanently to a JSON file in GitHub when `GITHUB_TOKEN` is configured. The app writes and reads `data/bookings.json` on the `bookings-backup` branch by default, so redeploys and sleeping free instances do not erase the admin dashboard. On Render, the booking API refuses to save unless `GITHUB_TOKEN` is set or `DATA_DIR` points at real persistent storage. The site needs a running Node process; a simple static Netlify/GitHub Pages deployment will **not** save bookings.
 
 For a public deployment, use HTTPS and set `COOKIE_SECURE=true`. Keep `ADMIN_PASSWORD` in the host's environment variables. Do not put it in frontend JavaScript or a public Git repository. Consider access limits/CAPTCHA if you share the link widely; the date endpoint is intentionally public so Amelie can submit it.
+
+Set this environment variable on Render:
+
+```text
+GITHUB_TOKEN=github_pat_...
+```
+
+Use a fine-grained GitHub token with **Contents: Read and write** access for this repository only. The default backup target is `Abhi-coder722/Fun-repo-`, branch `bookings-backup`, file `data/bookings.json`. Override with `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_BRANCH`, or `GITHUB_BOOKINGS_PATH` only if needed.
 
 ## Personalize it
 

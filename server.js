@@ -8,11 +8,17 @@ const { URL } = require('node:url');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
-const DEFAULT_DATA_DIR = process.env.RENDER ? '/var/data' : path.join(ROOT, 'data');
+const DEFAULT_DATA_DIR = process.env.RENDER ? '/tmp/operation-amelie-data' : path.join(ROOT, 'data');
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : DEFAULT_DATA_DIR;
 const BOOKING_FILE = path.join(DATA_DIR, 'bookings.json');
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
+const GITHUB_OWNER = String(process.env.GITHUB_OWNER || 'Abhi-coder722');
+const GITHUB_REPO = String(process.env.GITHUB_REPO || 'Fun-repo-');
+const GITHUB_BRANCH = String(process.env.GITHUB_BRANCH || 'bookings-backup');
+const GITHUB_BOOKINGS_PATH = String(process.env.GITHUB_BOOKINGS_PATH || 'data/bookings.json').replace(/^\/+/, '');
+const LOCAL_STORAGE_ALLOWED = !process.env.RENDER || !!process.env.DATA_DIR;
 const SESSION_SECRET = crypto.randomBytes(32);
 const HOUR = 3600000;
 const SESSION_MS = 12 * HOUR;
@@ -50,15 +56,81 @@ async function bodyJSON(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('Invalid JSON.'); }
 }
 function parseBookings(content) { const parsed = JSON.parse(content); return Array.isArray(parsed) ? parsed : []; }
-async function readLocalBookings() { try { return parseBookings(await fs.readFile(BOOKING_FILE,'utf8')); } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
-async function readBookings() { return readLocalBookings(); }
-function storageError(err) {
-  const e = new Error(`Booking storage is not writable at ${BOOKING_FILE}. On Render, add a persistent Disk mounted at ${DATA_DIR}, then redeploy.`);
+function pathPart(filePath) { return filePath.split('/').map(encodeURIComponent).join('/'); }
+function githubConfig() {
+  if(!GITHUB_TOKEN) return null;
+  return { token:GITHUB_TOKEN, owner:GITHUB_OWNER, repo:GITHUB_REPO, branch:GITHUB_BRANCH, filePath:GITHUB_BOOKINGS_PATH };
+}
+async function githubJSON(url, config, options = {}) {
+  const response = await fetch(url, { ...options, headers: { 'Accept':'application/vnd.github+json', 'Authorization':`Bearer ${config.token}`, 'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'operation-amelie', ...(options.headers || {}) } });
+  const text = await response.text();
+  let json = null;
+  if(text) { try { json = JSON.parse(text); } catch { json = { message:text }; } }
+  if(!response.ok) {
+    const err = new Error(json && json.message ? json.message : `GitHub request failed with ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return json;
+}
+async function githubFile(config) {
+  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart(config.filePath)}?ref=${encodeURIComponent(config.branch)}`;
+  try { return await githubJSON(url, config); }
+  catch(e) { if(e.status === 404) return null; throw e; }
+}
+function permanentStoreError(err, action) {
+  const detail = err && err.message ? ` GitHub said: ${err.message}` : '';
+  const e = new Error(`Could not ${action} the permanent booking file.${detail}`);
   e.status = 503;
   e.cause = err;
-  console.error('Booking storage write failed:', err.code || err.name, err.message);
+  console.error(`Permanent booking store ${action} failed:`, err && (err.code || err.status || err.name), err && err.message);
   return e;
 }
+function missingPermanentStoreError() {
+  const e = new Error('Permanent booking storage is not configured. Set GITHUB_TOKEN on Render, or set DATA_DIR to a persistent disk path.');
+  e.status = 503;
+  console.error(e.message);
+  return e;
+}
+async function readGitHubBookings(config) {
+  try {
+    const file = await githubFile(config);
+    if(!file || !file.content) return [];
+    return parseBookings(Buffer.from(String(file.content).replace(/\n/g,''), 'base64').toString('utf8'));
+  } catch(e) {
+    throw permanentStoreError(e, 'read');
+  }
+}
+async function writeGitHubBookings(config, bookings) {
+  const content = JSON.stringify(bookings,null,2) + '\n';
+  const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${pathPart(config.filePath)}`;
+  for(let attempt=1; attempt<=2; attempt++) {
+    try {
+      const current = await githubFile(config);
+      if(current && current.content) {
+        const existing = Buffer.from(String(current.content).replace(/\n/g,''), 'base64').toString('utf8');
+        if(existing === content) return;
+      }
+      await githubJSON(url, config, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          message:'Save Operation Amelie booking',
+          content: Buffer.from(content, 'utf8').toString('base64'),
+          branch: config.branch,
+          sha: current ? current.sha : undefined,
+          committer: { name:'Operation Amelie', email:'operation-amelie@users.noreply.github.com' }
+        })
+      });
+      return;
+    } catch(e) {
+      if(e.status === 409 && attempt < 2) continue;
+      throw permanentStoreError(e, 'write');
+    }
+  }
+}
+async function readLocalBookings() { try { return parseBookings(await fs.readFile(BOOKING_FILE,'utf8')); } catch(e) { if(e.code==='ENOENT') return []; throw e; } }
+async function readBookings() { const config=githubConfig(); if(config) return readGitHubBookings(config); if(!LOCAL_STORAGE_ALLOWED) throw missingPermanentStoreError(); return readLocalBookings(); }
 async function writeLocalBookings(bookings) {
   try {
     await fs.mkdir(DATA_DIR, {recursive:true});
@@ -66,10 +138,14 @@ async function writeLocalBookings(bookings) {
     await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600});
     await fs.rename(temp, BOOKING_FILE);
   } catch(e) {
-    throw storageError(e);
+    console.error('Local booking cache write failed:', e.code || e.name, e.message);
+    if(!githubConfig() && LOCAL_STORAGE_ALLOWED) throw permanentStoreError(e, 'write');
   }
 }
 async function persistBookings(bookings) {
+  const config=githubConfig();
+  if(config) await writeGitHubBookings(config, bookings);
+  if(!config && !LOCAL_STORAGE_ALLOWED) throw missingPermanentStoreError();
   await writeLocalBookings(bookings);
 }
 async function api(req,res,url) {
@@ -134,7 +210,10 @@ async function handler(req,res) {
 }
 if(require.main===module) {
   if(!ADMIN_PASSWORD) console.warn('Admin dashboard login is DISABLED until ADMIN_PASSWORD is set. See README.md');
-  console.log(`Bookings file: ${BOOKING_FILE}`);
+  const config=githubConfig();
+  if(config) console.log(`Permanent bookings file: GitHub ${config.owner}/${config.repo} ${config.branch}:${config.filePath}`);
+  else if(LOCAL_STORAGE_ALLOWED) console.log(`Permanent bookings file: ${BOOKING_FILE}`);
+  else console.warn('Permanent booking storage is missing. Set GITHUB_TOKEN on Render, or set DATA_DIR to a persistent disk path.');
   http.createServer(handler).listen(PORT,()=>console.log(`Operation Amelie running at http://localhost:${PORT}`));
 }
 module.exports={handler};
