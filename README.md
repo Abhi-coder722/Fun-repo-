@@ -40,7 +40,7 @@ For a public deployment, use HTTPS and set `COOKIE_SECURE=true`. Keep `ADMIN_PAS
 
 ### Optional GitHub backup
 
-The server can also commit the bookings JSON file to GitHub after every saved submission or admin status change. It still writes to `data/bookings.json` first, then runs the GitHub backup in the background so Amelie does not see an error if GitHub is temporarily unavailable. When backup is enabled, the admin dashboard also reads the GitHub copy and merges it with the local JSON file, so Render can recover bookings after a restart or redeploy.
+The server can also commit the bookings JSON file to GitHub after every saved submission or admin status change. It still writes to `data/bookings.json` first, then waits for GitHub to accept the backup before returning success. When backup is enabled, the admin dashboard also reads the GitHub copy and merges it with the local JSON file, so Render can recover bookings after a restart or redeploy.
 
 Set these environment variables on Render:
 

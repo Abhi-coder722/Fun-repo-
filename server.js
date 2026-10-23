@@ -12,7 +12,7 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 const BOOKING_FILE = path.join(DATA_DIR, 'bookings.json');
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '');
+const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
 const GITHUB_BOOKINGS_BACKUP = process.env.GITHUB_BOOKINGS_BACKUP === 'true' || !!GITHUB_TOKEN;
 const SESSION_SECRET = crypto.randomBytes(32);
 const HOUR = 3600000;
@@ -20,7 +20,6 @@ const SESSION_MS = 12 * HOUR;
 const loginAttempts = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' };
 let writeQueue = Promise.resolve();
-let backupQueue = Promise.resolve();
 let backupWarningShown = false;
 
 function send(res, status, data, headers = {}) {
@@ -144,11 +143,16 @@ async function pushBookingsToGitHub(content, reason) {
     }
   }
 }
-function enqueueBookingsBackup(bookings, reason) {
-  const snapshot = JSON.stringify(bookings,null,2) + '\n';
-  backupQueue = backupQueue.catch(()=>{}).then(()=>pushBookingsToGitHub(snapshot, reason)).catch(e=>console.error('GitHub bookings backup failed:', e.message));
+async function writeLocalBookings(bookings) {
+  await fs.mkdir(DATA_DIR, {recursive:true});
+  const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp';
+  await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600});
+  await fs.rename(temp, BOOKING_FILE);
 }
-async function atomicWrite(bookings, reason='update') { await fs.mkdir(DATA_DIR, {recursive:true}); const temp=BOOKING_FILE+'.'+crypto.randomBytes(6).toString('hex')+'.tmp'; await fs.writeFile(temp,JSON.stringify(bookings,null,2),{mode:0o600}); await fs.rename(temp, BOOKING_FILE); enqueueBookingsBackup(bookings, reason); }
+async function persistBookings(bookings, reason='update') {
+  await writeLocalBookings(bookings);
+  if(githubConfig()) await pushBookingsToGitHub(JSON.stringify(bookings,null,2) + '\n', reason);
+}
 async function api(req,res,url) {
   if(req.method === 'POST' && url.pathname === '/api/bookings') {
     const b = await bodyJSON(req);
@@ -160,9 +164,9 @@ async function api(req,res,url) {
     if(date < today || date > new Date(Date.now()+366*86400000).toISOString().slice(0,10)) return error(res,400,'Please choose a date within the next year.');
     const result=await (writeQueue = writeQueue.catch(()=>{}).then(async()=>{
       const bookings=await readBookings(); const prior=bookings.find(x=>x.key===key);
-      if(prior) return prior;
+      if(prior) { await persistBookings(bookings, 'submission retry'); return prior; }
       const entry={ id: crypto.randomUUID(), key, date, time, note, timezone:'Europe/Berlin', createdAt:new Date().toISOString(), status:'confirmed' };
-      bookings.push(entry); await atomicWrite(bookings, 'submission'); return entry;
+      bookings.push(entry); await persistBookings(bookings, 'submission'); return entry;
     }));
     return send(res,201,{ok:true,id:result.id,date:result.date,time:result.time});
   }
@@ -183,7 +187,7 @@ async function api(req,res,url) {
       if(!['confirmed','completed','cancelled'].includes(input.status)) return error(res,400,'Invalid status.');
       const found=await (writeQueue=writeQueue.catch(()=>{}).then(async()=>{
         const all=await readBookings(); const entry=all.find(x=>x.id===id);
-        if(entry) { entry.status=input.status; await atomicWrite(all, 'status update'); }
+        if(entry) { entry.status=input.status; await persistBookings(all, 'status update'); }
         return !!entry;
       }));
       return found?send(res,200,{ok:true}):error(res,404,'Booking not found.');
@@ -211,6 +215,8 @@ async function handler(req,res) {
 }
 if(require.main===module) {
   if(!ADMIN_PASSWORD) console.warn('Admin dashboard login is DISABLED until ADMIN_PASSWORD is set. See README.md');
+  const backup = githubConfig();
+  if(backup) console.log(`GitHub bookings backup enabled: ${backup.owner}/${backup.repo} ${backup.branch}:${backup.filePath}`);
   http.createServer(handler).listen(PORT,()=>console.log(`Operation Amelie running at http://localhost:${PORT}`));
 }
 module.exports={handler};
